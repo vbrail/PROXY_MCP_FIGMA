@@ -83,10 +83,8 @@ app.get('/sse', async (req: Request, res: Response) => {
   const transport = new SSEServerTransport('/message', res as unknown as ServerResponse);
 
   try {
-    // Start the transport (sets up SSE connection)
-    await transport.start();
-    
-    // Connect server to transport
+    // Connect server to transport (this automatically calls transport.start())
+    // DO NOT call transport.start() manually - Server.connect() does it automatically
     await connectionServer.connect(transport);
     
     // Store connection by session ID
@@ -143,10 +141,8 @@ app.post('/sse', async (req: Request, res: Response) => {
   const transport = new SSEServerTransport('/message', res as unknown as ServerResponse);
 
   try {
-    // Start the transport (sets up SSE connection)
-    await transport.start();
-    
-    // Connect server to transport
+    // Connect server to transport (this automatically calls transport.start())
+    // DO NOT call transport.start() manually - Server.connect() does it automatically
     await connectionServer.connect(transport);
     
     // Store connection by session ID
