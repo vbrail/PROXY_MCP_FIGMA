@@ -55,7 +55,9 @@ app.get('/health', (req, res) => {
 // Store active connections (sessionId -> { transport, server })
 const activeConnections = new Map<string, { transport: SSEServerTransport; server: Server }>();
 
-// SSE endpoint for MCP (server-to-client)
+// Handle both GET and POST for /sse endpoint
+// GET: Establishes SSE connection
+// POST: Some clients may POST first to establish connection
 app.get('/sse', async (req: Request, res: Response) => {
   // Create a new server instance for this connection
   const connectionServer = new Server(
@@ -101,6 +103,60 @@ app.get('/sse', async (req: Request, res: Response) => {
   req.on('close', () => {
     const sessionId = transport.sessionId;
     console.log(`MCP client disconnected [session: ${sessionId}]`);
+    activeConnections.delete(sessionId);
+    transport.close();
+  });
+});
+
+// Handle POST to /sse (some clients POST first to establish connection)
+app.post('/sse', async (req: Request, res: Response) => {
+  // Some MCP clients (like Cursor) POST to /sse to establish connection
+  // Treat it the same as GET - establish SSE connection
+  // Create a new server instance for this connection
+  const connectionServer = new Server(
+    {
+      name: 'figma-proxy-mcp-server',
+      version: '1.0.0',
+    },
+    {
+      capabilities: {
+        resources: {},
+        tools: {},
+        prompts: {},
+      },
+    }
+  );
+
+  // Setup handlers for this server instance
+  setupResourceHandlers(connectionServer, figmaClient);
+  setupToolHandlers(connectionServer, figmaClient);
+
+  // Create SSE transport using the SDK's built-in transport
+  const transport = new SSEServerTransport('/message', res as unknown as ServerResponse);
+
+  try {
+    // Start the transport (sets up SSE connection)
+    await transport.start();
+    
+    // Connect server to transport
+    await connectionServer.connect(transport);
+    
+    // Store connection by session ID
+    activeConnections.set(transport.sessionId, { transport, server: connectionServer });
+    
+    console.log(`MCP client connected via SSE (POST) [session: ${transport.sessionId}]`);
+  } catch (error) {
+    console.error('Error connecting MCP client via POST:', error);
+    if (!res.headersSent) {
+      res.status(500).end();
+    }
+    return;
+  }
+
+  // Handle client disconnect
+  req.on('close', () => {
+    const sessionId = transport.sessionId;
+    console.log(`MCP client disconnected (POST) [session: ${sessionId}]`);
     activeConnections.delete(sessionId);
     transport.close();
   });
