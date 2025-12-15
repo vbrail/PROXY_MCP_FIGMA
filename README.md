@@ -40,19 +40,22 @@ Developer Cursor IDEs → Your MCP Server (Cloud) → Figma API (Your Account)
 
 ### 2. Deploy the Server
 
-#### Option A: Deploy to Render (Recommended)
+#### Option A: Deploy to Render with Docker (Recommended)
 
 1. Fork or push this repository to GitHub
 2. Sign up at [render.com](https://render.com)
 3. Create a new **Web Service**
 4. Connect your GitHub repository
 5. Configure:
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
+   - **Runtime**: `Docker`
+   - **Dockerfile Path**: `Dockerfile` (auto-detected)
    - **Environment Variables**:
      - `FIGMA_ACCESS_TOKEN` = (your token from step 1)
-     - `PORT` = `10000` (or leave default)
+     - `NODE_ENV` = `production`
+     - `PORT` = `10000` (Render sets this automatically)
 6. Deploy!
+
+**📖 Detailed steps**: See [DEPLOYMENT.md](DEPLOYMENT.md) for complete walkthrough.
 
 Your server URL will be: `https://your-service-name.onrender.com`
 
