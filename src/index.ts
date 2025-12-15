@@ -90,9 +90,11 @@ app.get('/sse', async (req: Request, res: Response) => {
     await connectionServer.connect(transport);
     
     // Store connection by session ID
-    activeConnections.set(transport.sessionId, { transport, server: connectionServer });
+    const sessionId = transport.sessionId;
+    activeConnections.set(sessionId, { transport, server: connectionServer });
     
-    console.log(`MCP client connected via SSE [session: ${transport.sessionId}]`);
+    console.log(`[GET /sse] MCP client connected via SSE [session: ${sessionId}]`);
+    console.log(`[GET /sse] Total active connections: ${activeConnections.size}`);
   } catch (error) {
     console.error('Error connecting MCP client:', error);
     res.status(500).end();
@@ -102,9 +104,15 @@ app.get('/sse', async (req: Request, res: Response) => {
   // Handle client disconnect
   req.on('close', () => {
     const sessionId = transport.sessionId;
-    console.log(`MCP client disconnected [session: ${sessionId}]`);
-    activeConnections.delete(sessionId);
-    transport.close();
+    console.log(`[GET /sse] Client disconnected [session: ${sessionId}]`);
+    // Don't immediately delete - give some time for pending POST requests
+    setTimeout(() => {
+      if (activeConnections.has(sessionId)) {
+        console.log(`[GET /sse] Cleaning up session after disconnect: ${sessionId}`);
+        activeConnections.delete(sessionId);
+        transport.close();
+      }
+    }, 5000); // Wait 5 seconds before cleanup
   });
 });
 
@@ -142,9 +150,11 @@ app.post('/sse', async (req: Request, res: Response) => {
     await connectionServer.connect(transport);
     
     // Store connection by session ID
-    activeConnections.set(transport.sessionId, { transport, server: connectionServer });
+    const sessionId = transport.sessionId;
+    activeConnections.set(sessionId, { transport, server: connectionServer });
     
-    console.log(`MCP client connected via SSE (POST) [session: ${transport.sessionId}]`);
+    console.log(`[POST /sse] MCP client connected via SSE [session: ${sessionId}]`);
+    console.log(`[POST /sse] Total active connections: ${activeConnections.size}`);
   } catch (error) {
     console.error('Error connecting MCP client via POST:', error);
     if (!res.headersSent) {
@@ -156,9 +166,15 @@ app.post('/sse', async (req: Request, res: Response) => {
   // Handle client disconnect
   req.on('close', () => {
     const sessionId = transport.sessionId;
-    console.log(`MCP client disconnected (POST) [session: ${sessionId}]`);
-    activeConnections.delete(sessionId);
-    transport.close();
+    console.log(`[POST /sse] Client disconnected [session: ${sessionId}]`);
+    // Don't immediately delete - give some time for pending POST requests
+    setTimeout(() => {
+      if (activeConnections.has(sessionId)) {
+        console.log(`[POST /sse] Cleaning up session after disconnect: ${sessionId}`);
+        activeConnections.delete(sessionId);
+        transport.close();
+      }
+    }, 5000); // Wait 5 seconds before cleanup
   });
 });
 
@@ -166,16 +182,46 @@ app.post('/sse', async (req: Request, res: Response) => {
 app.post('/message', express.raw({ type: '*/*' }), async (req: Request, res: Response) => {
   try {
     // Extract session ID from query string (SSEServerTransport sends it in the endpoint event)
-    const sessionId = req.query.sessionId as string;
+    // Decode in case it's URL encoded
+    let sessionId = req.query.sessionId as string;
+    if (sessionId) {
+      sessionId = decodeURIComponent(sessionId);
+    }
+
+    console.log(`[POST /message] Received request with sessionId: ${sessionId}`);
+    console.log(`[POST /message] Raw query: ${JSON.stringify(req.query)}`);
+    console.log(`[POST /message] Active connections: ${Array.from(activeConnections.keys()).join(', ') || 'none'}`);
 
     if (!sessionId) {
+      console.error('[POST /message] No sessionId provided');
       return res.status(400).json({ error: 'Session ID required in query string' });
     }
 
-    const connection = activeConnections.get(sessionId);
+    // Try exact match first
+    let connection = activeConnections.get(sessionId);
+    
+    // If not found, try to find by partial match (in case of encoding issues)
     if (!connection) {
-      return res.status(404).json({ error: 'Session not found' });
+      for (const [storedId, conn] of activeConnections.entries()) {
+        if (storedId.includes(sessionId) || sessionId.includes(storedId)) {
+          console.log(`[POST /message] Found connection by partial match: ${storedId} matches ${sessionId}`);
+          connection = conn;
+          break;
+        }
+      }
     }
+
+    if (!connection) {
+      console.error(`[POST /message] Session not found: ${sessionId}`);
+      console.error(`[POST /message] Available sessions: ${Array.from(activeConnections.keys()).join(', ') || 'none'}`);
+      return res.status(404).json({ 
+        error: 'Session not found',
+        requestedSessionId: sessionId,
+        availableSessions: Array.from(activeConnections.keys())
+      });
+    }
+
+    console.log(`[POST /message] Found connection for session: ${sessionId}`);
 
     // Use the transport's built-in POST handler
     // It expects Node.js IncomingMessage and ServerResponse
@@ -184,7 +230,7 @@ app.post('/message', express.raw({ type: '*/*' }), async (req: Request, res: Res
       res as unknown as ServerResponse
     );
   } catch (error) {
-    console.error('Error handling message:', error);
+    console.error('[POST /message] Error handling message:', error);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Internal server error' });
     }
