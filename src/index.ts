@@ -45,7 +45,16 @@ const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Only use express.json() for non-MCP endpoints
+// MCP /message endpoint needs raw stream access
+app.use((req, res, next) => {
+  if (req.path === '/message') {
+    // Skip body parsing for /message - transport needs raw stream
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -175,7 +184,8 @@ app.post('/sse', async (req: Request, res: Response) => {
 });
 
 // Message endpoint for receiving messages from client (client-to-server)
-app.post('/message', express.raw({ type: '*/*' }), async (req: Request, res: Response) => {
+// Don't use express.raw() - the transport's handlePostMessage needs to read the raw stream
+app.post('/message', async (req: Request, res: Response) => {
   try {
     // Extract session ID from query string (SSEServerTransport sends it in the endpoint event)
     // Decode in case it's URL encoded
