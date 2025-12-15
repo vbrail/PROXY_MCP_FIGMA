@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import express, { type Request, type Response } from 'express';
+import type { ServerResponse, IncomingMessage } from 'node:http';
 import cors from 'cors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { FigmaClient } from './figma-client.js';
 import { setupResourceHandlers } from './handlers/resources.js';
 import { setupToolHandlers } from './handlers/tools.js';
-import { SSETransport } from './transport/sse-transport.js';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const FIGMA_ACCESS_TOKEN = process.env.FIGMA_ACCESS_TOKEN;
@@ -51,20 +52,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'figma-proxy-mcp-server' });
 });
 
-// Store active connections (connectionId -> { transport, server })
-const activeConnections = new Map<string, { transport: SSETransport; server: Server }>();
+// Store active connections (sessionId -> { transport, server })
+const activeConnections = new Map<string, { transport: SSEServerTransport; server: Server }>();
 
 // SSE endpoint for MCP (server-to-client)
 app.get('/sse', async (req: Request, res: Response) => {
-  // Set headers for SSE
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
-
-  const connectionId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
-
   // Create a new server instance for this connection
   const connectionServer = new Server(
     {
@@ -84,39 +76,21 @@ app.get('/sse', async (req: Request, res: Response) => {
   setupResourceHandlers(connectionServer, figmaClient);
   setupToolHandlers(connectionServer, figmaClient);
 
-  // Create SSE transport
-  const transport = new SSETransport(res);
-
-  // Set up message handler to route incoming messages to the server
-  transport.setMessageHandler(async (message: string) => {
-    try {
-      // The MCP server expects to receive messages through its transport
-      // We need to manually handle the JSON-RPC protocol
-      const jsonMessage = JSON.parse(message);
-      
-      // Use the server's request handler to process the message
-      // This is a simplified approach - in production you'd use the SDK's message routing
-      if (jsonMessage.method) {
-        // Handle the request through the server
-        // Note: This is a workaround - the SDK's transport interface expects different handling
-        console.log('Received message:', jsonMessage.method);
-      }
-    } catch (error) {
-      console.error('Error handling message:', error);
-    }
-  });
+  // Create SSE transport using the SDK's built-in transport
+  // Express Response extends Node.js ServerResponse, so this is compatible
+  const transport = new SSEServerTransport('/message', res as unknown as ServerResponse);
 
   try {
+    // Start the transport (sets up SSE connection)
+    await transport.start();
+    
     // Connect server to transport
-    // Note: The MCP SDK's connect method expects a transport that implements both send and receive
-    // For SSE, we handle receive via POST endpoint below
     await connectionServer.connect(transport);
-    activeConnections.set(connectionId, { transport, server: connectionServer });
     
-    // Send connection ID to client
-    res.write(`data: ${JSON.stringify({ type: 'connection', id: connectionId })}\n\n`);
+    // Store connection by session ID
+    activeConnections.set(transport.sessionId, { transport, server: connectionServer });
     
-    console.log(`MCP client connected via SSE [${connectionId}]`);
+    console.log(`MCP client connected via SSE [session: ${transport.sessionId}]`);
   } catch (error) {
     console.error('Error connecting MCP client:', error);
     res.status(500).end();
@@ -125,38 +99,39 @@ app.get('/sse', async (req: Request, res: Response) => {
 
   // Handle client disconnect
   req.on('close', () => {
-    console.log(`MCP client disconnected [${connectionId}]`);
-    activeConnections.delete(connectionId);
+    const sessionId = transport.sessionId;
+    console.log(`MCP client disconnected [session: ${sessionId}]`);
+    activeConnections.delete(sessionId);
     transport.close();
   });
 });
 
 // Message endpoint for receiving messages from client (client-to-server)
-app.post('/message', express.text({ type: '*/*' }), async (req: Request, res: Response) => {
+app.post('/message', express.raw({ type: '*/*' }), async (req: Request, res: Response) => {
   try {
-    const message = req.body;
-    if (!message) {
-      return res.status(400).json({ error: 'Message body required' });
+    // Extract session ID from query string (SSEServerTransport sends it in the endpoint event)
+    const sessionId = req.query.sessionId as string;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID required in query string' });
     }
 
-    const connectionId = req.headers['x-connection-id'] as string || req.query.connectionId as string;
-
-    if (!connectionId) {
-      return res.status(400).json({ error: 'Connection ID required (x-connection-id header or connectionId query param)' });
-    }
-
-    const connection = activeConnections.get(connectionId);
+    const connection = activeConnections.get(sessionId);
     if (!connection) {
-      return res.status(404).json({ error: 'Connection not found' });
+      return res.status(404).json({ error: 'Session not found' });
     }
 
-    // Route message to the transport's message handler
-    connection.transport.handleMessage(message);
-
-    res.status(200).json({ received: true });
+    // Use the transport's built-in POST handler
+    // It expects Node.js IncomingMessage and ServerResponse
+    await connection.transport.handlePostMessage(
+      req as unknown as IncomingMessage,
+      res as unknown as ServerResponse
+    );
   } catch (error) {
     console.error('Error handling message:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 });
 
