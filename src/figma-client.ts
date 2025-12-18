@@ -103,6 +103,27 @@ export class FigmaClient {
   }
 
   /**
+   * Fetch screenshot image data from URLs (downloads actual image bytes)
+   */
+  async fetchScreenshotData(imageUrl: string): Promise<{ data: ArrayBuffer; mimeType: string }> {
+    const response = await fetch(imageUrl);
+    
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch screenshot (${response.status}): ${response.statusText}`
+      );
+    }
+
+    const data = await response.arrayBuffer();
+    const contentType = response.headers.get('content-type') || 'image/png';
+    
+    return {
+      data,
+      mimeType: contentType,
+    };
+  }
+
+  /**
    * Extract design tokens from a file
    */
   async extractDesignTokens(fileId: string): Promise<DesignToken> {
